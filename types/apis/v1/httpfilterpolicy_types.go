@@ -30,10 +30,9 @@ import (
 type HTTPFilterPolicySpec struct {
 	// TargetRef is the name of the resource this policy is being attached to.
 	// This Policy and the TargetRef MUST be in the same namespace.
+	// HTTPFilterPolicy in embedded mode can have no targetRef.
 	//
 	// +optional
-	// +kubebuilder:validation:XValidation:rule="self.group in ['', 'networking.istio.io', 'gateway.networking.k8s.io']", message="unsupported targetRef.group"
-	// +kubebuilder:validation:XValidation:rule="self.kind in ['Namespace', 'VirtualService', 'Gateway', 'HTTPRoute', 'GRPCRoute']", message="unsupported targetRef.kind"
 	TargetRef *gwapiv1a2.PolicyTargetReferenceWithSectionName `json:"targetRef"`
 
 	// Filters is a map of filter names to filter configurations.
@@ -69,15 +68,7 @@ type HTTPFilterPolicyStatus struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`
 
-	changed bool
-}
-
-func (s *HTTPFilterPolicyStatus) IsChanged() bool {
-	return s.changed
-}
-
-func (s *HTTPFilterPolicyStatus) Reset() {
-	s.changed = false
+	ChangeDetector `json:",inline"`
 }
 
 //+genclient
@@ -137,7 +128,7 @@ func (p *HTTPFilterPolicy) SetAccepted(reason gwapiv1a2.PolicyConditionReason, m
 	p.Status.Conditions = conds
 
 	if changed {
-		p.Status.changed = true
+		p.Status.MarkAsChanged()
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -56,10 +57,13 @@ type DataPlane struct {
 }
 
 type Option struct {
-	LogLevel         string
-	NoErrorLogCheck  bool
-	ExpectLogPattern []string
-	Bootstrap        *bootstrap
+	LogLevel  string
+	Envs      map[string]string
+	Bootstrap *bootstrap
+
+	NoErrorLogCheck    bool
+	ExpectLogPattern   []string
+	ExpectNoLogPattern []string
 }
 
 func StartDataPlane(t *testing.T, opt *Option) (*DataPlane, error) {
@@ -141,15 +145,18 @@ func StartDataPlane(t *testing.T, opt *Option) (*DataPlane, error) {
 		// Since we only care about the coverage in CI, it is fine so far.
 	}
 
-	// This is the envoyproxy/envoy:contrib-v1.29.4
-	// Use docker inspect --format='{{index .RepoDigests 0}}' envoyproxy/envoy:contrib-v1.29.4
-	// to get the sha256 ID
-	image := "envoyproxy/envoy@sha256:490f58e109735df4326bac2736ed41e062ce541d3851d634ccbf24552e5b4ce5"
+	image := "m.daocloud.io/docker.io/envoyproxy/envoy:contrib-v1.29.5"
+
+	specifiedImage := os.Getenv("PROXY_IMAGE")
+	if specifiedImage != "" {
+		image = specifiedImage
+	}
+
 	b, err := exec.Command("docker", "images", image).Output()
 	if err != nil {
 		return nil, err
 	}
-	if !strings.Contains(string(b), "envoyproxy/envoy") {
+	if len(strings.Split(string(b), "\n")) < 3 {
 		cmd := exec.Command("docker", "pull", image)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -160,16 +167,38 @@ func StartDataPlane(t *testing.T, opt *Option) (*DataPlane, error) {
 		}
 	}
 
+	envs := []string{}
+	for k, v := range opt.Envs {
+		envs = append(envs, "-e", k+"="+v)
+	}
+
 	pwd, _ := os.Getwd()
+	soPath := filepath.Join(pwd, "libgolang.so")
+	st, err := os.Stat(soPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			logger.Error(err, "Shared library not found. Please build the shared library before running integration test, for example calling `make build-test-so`",
+				"shared library path", soPath)
+		}
+		return nil, err
+	}
+	if st.IsDir() {
+		err := errors.New("bad shared library detected")
+		logger.Error(err, "Please remove the bad file and build the shared library before running integration test, for example calling `make build-test-so`",
+			"shared library path", soPath)
+		return nil, err
+	}
+
 	cmdline := "docker run" +
 		" --name " + containerName +
 		" --network " + networkName +
 		" --user " + currentUser.Uid +
 		" --rm -t -v " +
 		cfgFile.Name() + ":/etc/envoy.yaml -v " +
-		filepath.Join(pwd, "libgolang.so") + ":/etc/libgolang.so" +
+		soPath + ":/etc/libgolang.so" +
 		" -v /tmp:/tmp" +
 		" -e GOCOVERDIR=" + coverDir +
+		" " + strings.Join(envs, " ") +
 		" -p 10000:10000 -p 9998:9998 " + hostAddr + " " +
 		image
 
@@ -306,6 +335,13 @@ func (dp *DataPlane) Stop() {
 			assert.Falsef(dp.t, true, "log pattern %q not found", pattern)
 		}
 	}
+
+	for _, pattern := range dp.opt.ExpectNoLogPattern {
+		re := regexp.MustCompile(pattern)
+		if re.Match(text) {
+			assert.Falsef(dp.t, true, "log pattern %q found", pattern)
+		}
+	}
 }
 
 func (dp *DataPlane) Head(path string, header http.Header) (*http.Response, error) {
@@ -330,6 +366,29 @@ func (dp *DataPlane) Put(path string, header http.Header, body io.Reader) (*http
 
 func (dp *DataPlane) Patch(path string, header http.Header, body io.Reader) (*http.Response, error) {
 	return dp.do("PATCH", path, header, body)
+}
+
+func (dp *DataPlane) SendAndCancelRequest(path string, after time.Duration) error {
+	conn, err := net.DialTimeout("tcp", ":10000", 1*time.Second)
+	if err != nil {
+		return err
+	}
+
+	defer conn.Close()
+	for _, s := range []string{
+		fmt.Sprintf("POST %s HTTP/1.1\r\n", path),
+		"Host: localhost\r\n",
+		"Content-Length: 10000\r\n",
+		"\r\n",
+	} {
+		_, err = conn.Write([]byte(s))
+		if err != nil {
+			return err
+		}
+	}
+	time.Sleep(after)
+
+	return nil
 }
 
 func (dp *DataPlane) do(method string, path string, header http.Header, body io.Reader) (*http.Response, error) {
@@ -371,5 +430,25 @@ func (dp *DataPlane) FlushCoverage() error {
 	if resp.StatusCode != 200 {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
 	}
+	return nil
+}
+
+func (dp *DataPlane) SetLogLevel(loggerName string, level string) error {
+	req, err := http.NewRequest("POST", fmt.Sprintf("http://0.0.0.0:9998/logging?%s=%s", loggerName, level), bytes.NewReader([]byte{}))
+	if err != nil {
+		return err
+	}
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
 	return nil
 }

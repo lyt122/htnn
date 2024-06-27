@@ -27,7 +27,7 @@ unit-test:
 .PHONY: build-test-so-local
 build-test-so-local:
 	CGO_ENABLED=1 go build -tags so \
-		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${VERSION}(${GIT_VERSION})" \
+		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n')" \
 		--buildmode=c-shared \
 		-cover -covermode=atomic -coverpkg=${PROJECT_NAME}/... \
 		-v -o tests/integration/${TARGET_SO} \
@@ -50,6 +50,7 @@ start-service:
 stop-service:
 	cd ./tests/integration/testdata/services && docker-compose down
 
+# The data plane image used in the integration test can be controlled via env var PROXY_IMAGE
 .PHONY: integration-test
 integration-test:
 	test -d /tmp/htnn_coverage && rm -rf /tmp/htnn_coverage || true
@@ -60,7 +61,7 @@ integration-test:
 .PHONY: build-so-local
 build-so-local:
 	CGO_ENABLED=1 go build -tags so \
-		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n') -X main.Version=${VERSION}(${GIT_VERSION})" \
+		-ldflags "-B 0x$(shell head -c20 /dev/urandom|od -An -tx1|tr -d ' \n')" \
 		--buildmode=c-shared \
 		-v -o ${TARGET_SO} \
 		${PROJECT_NAME}/plugins/cmd/libgolang
@@ -77,5 +78,6 @@ run-demo:
 	docker run --rm -v ${PROJECT_ROOT}/etc/demo.yaml:/etc/demo.yaml \
 		-v $(PWD)/libgolang.so:/etc/libgolang.so \
 		-p 10000:10000 \
+		-p 9998:9998 \
 		${PROXY_IMAGE} \
 		envoy -c /etc/demo.yaml --log-level info

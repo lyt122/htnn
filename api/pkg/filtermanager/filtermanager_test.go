@@ -15,6 +15,7 @@
 package filtermanager
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -22,60 +23,13 @@ import (
 	"testing"
 
 	"github.com/agiledragon/gomonkey/v2"
-	xds "github.com/cncf/xds/go/xds/type/v3"
 	"github.com/stretchr/testify/assert"
-	"google.golang.org/protobuf/types/known/anypb"
-	"google.golang.org/protobuf/types/known/structpb"
 
 	internalConsumer "mosn.io/htnn/api/internal/consumer"
-	"mosn.io/htnn/api/internal/proto"
 	"mosn.io/htnn/api/pkg/filtermanager/api"
 	"mosn.io/htnn/api/pkg/filtermanager/model"
 	"mosn.io/htnn/api/plugins/tests/pkg/envoy"
 )
-
-func TestParse(t *testing.T) {
-	ts := xds.TypedStruct{}
-	ts.Value, _ = structpb.NewStruct(map[string]interface{}{})
-	any1 := proto.MessageToAny(&ts)
-
-	cases := []struct {
-		name    string
-		input   *anypb.Any
-		wantErr bool
-	}{
-		{
-			name:    "happy path",
-			input:   any1,
-			wantErr: false,
-		},
-		{
-			name:    "happy path without config",
-			input:   &anypb.Any{},
-			wantErr: false,
-		},
-		{
-			name: "error UnmarshalTo",
-			input: &anypb.Any{
-				TypeUrl: "aaa",
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			parser := &FilterManagerConfigParser{}
-
-			_, err := parser.Parse(c.input, nil)
-			if c.wantErr {
-				assert.NotNil(t, err)
-			} else {
-				assert.Nil(t, err)
-			}
-		})
-	}
-}
 
 func TestPassThrough(t *testing.T) {
 	cb := envoy.NewCAPIFilterCallbackHandler()
@@ -284,28 +238,86 @@ func TestLocalReplyJSON_DoNotChangeMsgIfContentTypeIsGiven(t *testing.T) {
 	}, lr)
 }
 
-type setConsumerConf struct {
-	Consumers map[string]*internalConsumer.Consumer
+func initFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
+	return &api.PassThroughFilter{}
 }
 
-func setConsumerFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
-	return &setConsumerFilter{
-		callbacks: callbacks,
-		conf:      c.(setConsumerConf),
+type initConfig struct {
+	count int
+	err   error
+}
+
+func (c *initConfig) Init(cb api.ConfigCallbackHandler) error {
+	c.count++
+	return c.err
+}
+
+func TestInitFailed(t *testing.T) {
+	config := initFilterManagerConfig("ns")
+	config.initOnce = &sync.Once{}
+	ok := &initConfig{}
+	bad := &initConfig{
+		err: errors.New("ouch"),
 	}
-}
+	okParsed := &model.ParsedFilterConfig{
+		Name:         "init",
+		Factory:      initFactory,
+		ParsedConfig: ok,
+	}
+	badParsed := &model.ParsedFilterConfig{
+		Name:         "initFailed",
+		Factory:      initFactory,
+		ParsedConfig: bad,
+	}
 
-type setConsumerFilter struct {
-	api.PassThroughFilter
-	conf      setConsumerConf
-	callbacks api.FilterCallbackHandler
-}
+	config.parsed = []*model.ParsedFilterConfig{
+		okParsed,
+		badParsed,
+	}
+	n := 10
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			cb := envoy.NewCAPIFilterCallbackHandler()
+			m := FilterManagerFactory(config)(cb).(*filterManager)
+			h := http.Header{}
+			hdr := envoy.NewRequestHeaderMap(h)
+			m.DecodeHeaders(hdr, true)
+			cb.WaitContinued()
+			r := cb.LocalResponse()
+			assert.Equal(t, 500, r.Code)
 
-func (f *setConsumerFilter) DecodeHeaders(headers api.RequestHeaderMap, endStream bool) api.ResultAction {
-	key, _ := headers.Get("Consumer")
-	c := f.conf.Consumers[key]
-	f.callbacks.SetConsumer(c)
-	return api.Continue
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, ok.count)
+	assert.Equal(t, 1, bad.count)
+
+	config2 := initFilterManagerConfig("from_lds")
+	// simulate config inherited from LDS
+	config2 = config2.Merge(config)
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			cb := envoy.NewCAPIFilterCallbackHandler()
+			m := FilterManagerFactory(config2)(cb).(*filterManager)
+			h := http.Header{}
+			hdr := envoy.NewRequestHeaderMap(h)
+			m.DecodeHeaders(hdr, true)
+			cb.WaitContinued()
+			r := cb.LocalResponse()
+			assert.Equal(t, 500, r.Code)
+
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	assert.Equal(t, 1, ok.count)
+	assert.Equal(t, 1, bad.count)
 }
 
 func onLogFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
@@ -316,7 +328,8 @@ type onLogFilter struct {
 	api.PassThroughFilter
 }
 
-func (f *onLogFilter) OnLog() {
+func (f *onLogFilter) OnLog(reqHeaders api.RequestHeaderMap, reqTrailers api.RequestTrailerMap,
+	respHeaders api.ResponseHeaderMap, respTrailers api.ResponseTrailerMap) {
 }
 
 type addReqConf struct {
@@ -365,16 +378,41 @@ func TestSkipMethodWhenThereAreMultiFilters(t *testing.T) {
 	}
 }
 
+type setConsumerConf struct {
+	Consumers map[string]*internalConsumer.Consumer
+}
+
+func setConsumerFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
+	return &setConsumerFilter{
+		callbacks: callbacks,
+		conf:      c.(setConsumerConf),
+	}
+}
+
+type setConsumerFilter struct {
+	api.PassThroughFilter
+	conf      setConsumerConf
+	callbacks api.FilterCallbackHandler
+}
+
+func (f *setConsumerFilter) DecodeHeaders(headers api.RequestHeaderMap, endStream bool) api.ResultAction {
+	key, _ := headers.Get("Consumer")
+	c := f.conf.Consumers[key]
+	f.callbacks.SetConsumer(c)
+	return api.Continue
+}
+
 func TestFiltersFromConsumer(t *testing.T) {
 	config := initFilterManagerConfig("ns")
 	config.consumerFiltersEndAt = 1
 
 	consumers := map[string]*internalConsumer.Consumer{}
-	for i := 0; i < 10; i++ {
+	n := 10
+	for i := 0; i < n; i++ {
 		c := internalConsumer.Consumer{
 			FilterConfigs: map[string]*model.ParsedFilterConfig{
-				"add_req": {
-					Name:    "add_req",
+				"2_add_req": {
+					Name:    "2_add_req",
 					Factory: addReqFactory,
 					ParsedConfig: addReqConf{
 						hdrName: fmt.Sprintf("x-htnn-consumer-%d", i),
@@ -383,23 +421,25 @@ func TestFiltersFromConsumer(t *testing.T) {
 			},
 		}
 		if i%2 == 0 {
-			c.FilterConfigs["on_log"] = &model.ParsedFilterConfig{
-				Name:    "on_log",
+			c.FilterConfigs["3_on_log"] = &model.ParsedFilterConfig{
+				Name:    "3_on_log",
 				Factory: onLogFactory,
 			}
 		}
 		consumers[strconv.Itoa(i)] = &c
 	}
 	config.parsed = []*model.ParsedFilterConfig{
+		// HTNN will sort the plugins when merging the plugins from the consumer.
+		// Here we add number as the prefix to ensure the order.
 		{
-			Name:    "set_consumer",
+			Name:    "1_set_consumer",
 			Factory: setConsumerFactory,
 			ParsedConfig: setConsumerConf{
 				Consumers: consumers,
 			},
 		},
 		{
-			Name:    "add_req",
+			Name:    "2_add_req",
 			Factory: addReqFactory,
 			ParsedConfig: addReqConf{
 				hdrName: "x-htnn-route",
@@ -408,25 +448,25 @@ func TestFiltersFromConsumer(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	wg.Add(20)
-	for i := 0; i < 20; i++ {
+	wg.Add(2 * n)
+	for i := 0; i < 2*n; i++ {
 		go func(i int) {
 			cb := envoy.NewCAPIFilterCallbackHandler()
 			m := FilterManagerFactory(config)(cb).(*filterManager)
 			assert.Equal(t, true, m.canSkipOnLog)
-			assert.Equal(t, 1, len(m.filters))
+			assert.Equal(t, 2, len(m.filters))
 			h := http.Header{}
-			idx := i % 10
+			idx := i % n
 			h.Add("consumer", strconv.Itoa(idx))
 			hdr := envoy.NewRequestHeaderMap(h)
 			m.DecodeHeaders(hdr, true)
 			cb.WaitContinued()
 			if idx%2 == 0 {
 				assert.Equal(t, false, m.canSkipOnLog)
-				assert.Equal(t, 2, len(m.filters))
+				assert.Equal(t, 3, len(m.filters))
 			} else {
 				assert.Equal(t, true, m.canSkipOnLog)
-				assert.Equal(t, 1, len(m.filters))
+				assert.Equal(t, 2, len(m.filters))
 			}
 
 			_, ok := hdr.Get("x-htnn-route")
@@ -440,57 +480,132 @@ func TestFiltersFromConsumer(t *testing.T) {
 	wg.Wait()
 }
 
-func setPluginStateFilterFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
-	return &setPluginStateFilter{
-		callbacks: callbacks,
+func accessFieldOnLogFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
+	return &accessFieldOnLogFilter{
+		cb: callbacks,
 	}
 }
 
-type setPluginStateFilter struct {
+type accessFieldOnLogFilter struct {
 	api.PassThroughFilter
-	callbacks api.FilterCallbackHandler
+
+	cb api.FilterCallbackHandler
 }
 
-func (f *setPluginStateFilter) DecodeHeaders(headers api.RequestHeaderMap, endStream bool) api.ResultAction {
-	f.callbacks.PluginState().Set("test", "key", "value")
+func (f *accessFieldOnLogFilter) DecodeHeaders(_ api.RequestHeaderMap, _ bool) api.ResultAction {
+	f.cb.StreamInfo().DownstreamLocalAddress()
 	return api.Continue
 }
 
-func getPluginStateFilterFactory(c interface{}, callbacks api.FilterCallbackHandler) api.Filter {
-	return &getPluginStateFilter{
-		callbacks: callbacks,
-	}
-}
-
-type getPluginStateFilter struct {
-	api.PassThroughFilter
-	callbacks api.FilterCallbackHandler
-}
-
-func (f *getPluginStateFilter) DecodeHeaders(headers api.RequestHeaderMap, endStream bool) api.ResultAction {
-	v := f.callbacks.PluginState().Get("test", "key")
-	headers.Set("x-htnn-v", v.(string))
+func (f *accessFieldOnLogFilter) DecodeData(_ api.BufferInstance, _ bool) api.ResultAction {
+	f.cb.StreamInfo().DownstreamLocalAddress()
 	return api.Continue
 }
 
-func TestPluginState(t *testing.T) {
-	cb := envoy.NewCAPIFilterCallbackHandler()
+func (f *accessFieldOnLogFilter) DecodeTrailers(_ api.RequestTrailerMap) api.ResultAction {
+	f.cb.StreamInfo().DownstreamLocalAddress()
+	return api.Continue
+}
+
+func (f *accessFieldOnLogFilter) EncodeHeaders(_ api.ResponseHeaderMap, _ bool) api.ResultAction {
+	f.cb.StreamInfo().DownstreamLocalAddress()
+	return api.Continue
+}
+
+func (f *accessFieldOnLogFilter) EncodeData(_ api.BufferInstance, _ bool) api.ResultAction {
+	f.cb.StreamInfo().DownstreamLocalAddress()
+	return api.Continue
+}
+
+func (f *accessFieldOnLogFilter) EncodeTrailers(_ api.ResponseTrailerMap) api.ResultAction {
+	f.cb.StreamInfo().DownstreamLocalAddress()
+	return api.Continue
+}
+
+func (f *accessFieldOnLogFilter) OnLog(_ api.RequestHeaderMap, _ api.RequestTrailerMap,
+	_ api.ResponseHeaderMap, _ api.ResponseTrailerMap) {
+	f.cb.StreamInfo().DownstreamLocalAddress()
+}
+
+func TestDoNotRecycleInUsedFilterManager(t *testing.T) {
 	config := initFilterManagerConfig("ns")
 	config.parsed = []*model.ParsedFilterConfig{
 		{
-			Name:    "alice",
-			Factory: setPluginStateFilterFactory,
-		},
-		{
-			Name:    "bob",
-			Factory: getPluginStateFilterFactory,
+			Name:    "access_field_on_log",
+			Factory: accessFieldOnLogFactory,
 		},
 	}
-	m := FilterManagerFactory(config)(cb).(*filterManager)
-	h := http.Header{}
-	hdr := envoy.NewRequestHeaderMap(h)
-	m.DecodeHeaders(hdr, true)
-	cb.WaitContinued()
-	v, _ := hdr.Get("x-htnn-v")
-	assert.Equal(t, "value", v)
+
+	n := 10
+	var wg sync.WaitGroup
+
+	// DecodeHeaders
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			cb := envoy.NewCAPIFilterCallbackHandler()
+			m := FilterManagerFactory(config)(cb).(*filterManager)
+			h := http.Header{}
+			hdr := envoy.NewRequestHeaderMap(h)
+			m.DecodeHeaders(hdr, true)
+			m.OnLog()
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	// DecodeData
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			cb := envoy.NewCAPIFilterCallbackHandler()
+			m := FilterManagerFactory(config)(cb).(*filterManager)
+			h := http.Header{}
+			hdr := envoy.NewRequestHeaderMap(h)
+			m.DecodeHeaders(hdr, false)
+			cb.WaitContinued()
+			m.DecodeData(nil, true)
+			m.OnLog()
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	// EncodeHeaders
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			cb := envoy.NewCAPIFilterCallbackHandler()
+			m := FilterManagerFactory(config)(cb).(*filterManager)
+			h := http.Header{}
+			hdr := envoy.NewRequestHeaderMap(h)
+			m.DecodeHeaders(hdr, true)
+			cb.WaitContinued()
+			hdr2 := envoy.NewResponseHeaderMap(h)
+			m.EncodeHeaders(hdr2, true)
+			m.OnLog()
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	// EncodeData
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			cb := envoy.NewCAPIFilterCallbackHandler()
+			m := FilterManagerFactory(config)(cb).(*filterManager)
+			h := http.Header{}
+			hdr := envoy.NewRequestHeaderMap(h)
+			m.DecodeHeaders(hdr, true)
+			cb.WaitContinued()
+			hdr2 := envoy.NewResponseHeaderMap(h)
+			m.EncodeHeaders(hdr2, true)
+			cb.WaitContinued()
+			m.EncodeData(nil, true)
+			m.OnLog()
+			wg.Done()
+		}(i)
+	}
+	wg.Wait()
 }

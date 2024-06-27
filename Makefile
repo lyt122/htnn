@@ -44,6 +44,11 @@ gen-crd-code: $(LOCALBIN) install-go-fmtter
 	LOCALBIN=$(LOCALBIN) tools/gen-crd-code.sh
 	$(LOCALBIN)/gosimports -w -local ${PROJECT_NAME} ./types/pkg/client
 
+.PHONY: gen-helm-docs
+gen-helm-docs: $(LOCALBIN)
+	test -x $(LOCALBIN)/helm-docs || GOBIN=$(LOCALBIN) go install github.com/norwoodj/helm-docs/cmd/helm-docs@v1.13.1
+	$(LOCALBIN)/helm-docs --chart-search-root=./manifests/charts
+
 .PHONY: dev-tools
 dev-tools:
 	@if ! docker images ${DEV_TOOLS_IMAGE} | grep dev-tools > /dev/null; then \
@@ -80,9 +85,13 @@ fmt-go: install-go-fmtter
 # It will report 'missing directory' error if the 'missing directory' is added in the other module.
 # Even running `go work sync` first doesn't solve the problem, if the 'missing directory' is not released.
 # So we add `-e` to attempt to proceed despite errors encountered while loading packages.
-	$(foreach PKG, $(GO_MODULES), \
+	$(foreach PKG, $(GO_MODULES_EXCLUDE_SITE), \
 		pushd ./${PKG} && \
 			go mod tidy -e || exit 1; \
+		popd; \
+	)
+	$(foreach PKG, $(GO_MODULES), \
+		pushd ./${PKG} && \
 			$(LOCALBIN)/gosimports -w -local ${PROJECT_NAME} . || exit 1; \
 		popd; \
 	)
@@ -92,7 +101,7 @@ fmt-go: install-go-fmtter
 .PHONY: lint-proto
 lint-proto: $(LOCALBIN)
 	test -x $(LOCALBIN)/buf || GOBIN=$(LOCALBIN) go install github.com/bufbuild/buf/cmd/buf@v1.28.1
-	$(LOCALBIN)/buf lint
+	$(LOCALBIN)/buf lint --path ./api --path ./examples --path ./types
 
 .PHONY: fmt-proto
 fmt-proto: dev-tools
@@ -115,7 +124,7 @@ install-license-checker: $(LOCALBIN)
 .PHONY: lint-license
 lint-license: install-license-checker
 	$(LOCALBIN)/license-eye header check
-	$(LOCALBIN)/license-eye dependency check
+	$(LOCALBIN)/license-eye dependency check -w
 
 .PHONY: fix-license
 fix-license: install-license-checker
@@ -127,7 +136,7 @@ lint-spell: dev-tools
 		${DEV_TOOLS_IMAGE} \
 		make lint-spell-local
 
-CODESPELL = codespell --skip 'test-envoy,go.mod,go.sum,*.svg,./site/public/**' --check-filenames --check-hidden --ignore-words ./.ignore_words $(shell ls -A | tr '\t' '\n' | grep -vE 'external|.git|.idea|go.work.sum')
+CODESPELL = codespell --skip 'test-envoy,go.mod,go.sum,*.svg,./site/public/**,external,.git,.idea,go.work.sum' --check-filenames --check-hidden --ignore-words ./.ignore_words .
 .PHONY: lint-spell-local
 lint-spell-local:
 	$(CODESPELL)
@@ -146,7 +155,6 @@ fix-spell-local:
 lint-editorconfig: $(LOCALBIN)
 	test -x $(LOCALBIN)/editorconfig-checker || GOBIN=$(LOCALBIN) go install github.com/editorconfig-checker/editorconfig-checker/cmd/editorconfig-checker@2.7.2
 	$(LOCALBIN)/editorconfig-checker
-
 
 .PHONY: lint-remain
 lint-remain:

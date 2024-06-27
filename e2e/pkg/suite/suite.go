@@ -42,6 +42,7 @@ type Test struct {
 	Name      string
 	Manifests []string
 	Run       func(*testing.T, *Suite)
+	CleanUp   func(*testing.T, *Suite)
 }
 
 var (
@@ -80,6 +81,8 @@ func New(opt Options) *Suite {
 
 func (suite *Suite) Run(t *testing.T) {
 	k8s.Prepare(t, suite.Opt.Client, "base/default.yml")
+	k8s.Prepare(t, suite.Opt.Client, "base/nacos.yml")
+	suite.waitNacos(t)
 	suite.startPortForward(t)
 	defer suite.stopPortForward(t)
 	for _, test := range tests {
@@ -90,7 +93,13 @@ func (suite *Suite) Run(t *testing.T) {
 					t.Fail()
 				}
 			}()
+
+			// We run CleanUp before test so we can keep the resources generated in the test
+			// when the test failed.
 			t.Logf("CleanUp test %q at %v", test.Name, time.Now())
+			if test.CleanUp != nil {
+				test.CleanUp(t, suite)
+			}
 			suite.cleanup(t)
 			for _, manifest := range test.Manifests {
 				k8s.Prepare(t, suite.Opt.Client, manifest)
@@ -107,9 +116,17 @@ func (suite *Suite) Run(t *testing.T) {
 	}
 }
 
+func (suite *Suite) waitNacos(t *testing.T) {
+	cmdline := "kubectl wait --timeout=5m -n e2e deployment/nacos --for=condition=Available"
+	cmd := strings.Fields(cmdline)
+	wait := exec.Command(cmd[0], cmd[1:]...)
+	err := wait.Run()
+	require.NoError(t, err)
+}
+
 // We use port-forward so that both Linux and Mac can expose port in the same way
 func (suite *Suite) startPortForward(t *testing.T) {
-	// TODO: rewrite it with Go code
+	// TODO: rewrite 'kubectl wait' with Go code
 	for _, cond := range []struct {
 		name string
 		ns   string
@@ -123,7 +140,7 @@ func (suite *Suite) startPortForward(t *testing.T) {
 		cmd := strings.Fields(cmdline)
 		wait := exec.Command(cmd[0], cmd[1:]...)
 		err := wait.Run()
-		require.NoError(t, err)
+		require.NoError(t, err, "wait for deployment %s in namespace %s", cond.name, cond.ns)
 	}
 
 	cmdline := "./port-forward.sh"

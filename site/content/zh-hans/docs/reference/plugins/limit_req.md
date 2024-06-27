@@ -46,7 +46,11 @@ spec:
     backendRefs:
     - name: backend
       port: 8080
----
+```
+
+让我们应用下面的配置：
+
+```yaml
 apiVersion: htnn.mosn.io/v1
 kind: HTTPFilterPolicy
 metadata:
@@ -57,7 +61,7 @@ spec:
     kind: HTTPRoute
     name: default
   filters:
-    keyAuth:
+    limitReq:
       config:
         average: 1 # 限制请求到每秒 1 次
 ```

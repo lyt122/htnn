@@ -16,15 +16,18 @@ SHELL = /bin/bash
 
 TARGET_SO       = libgolang.so
 PROJECT_NAME    = mosn.io/htnn/dev_your_plugin
+DOCKER_MIRROR   = m.daocloud.io/
 # Both images use glibc 2.31. Ensure libc in the images match each other.
-BUILD_IMAGE     ?= golang:1.21-bullseye
-# This is the envoyproxy/envoy:contrib-v1.29.2
-# Use docker inspect --format='{{index .RepoDigests 0}}' envoyproxy/envoy:contrib-v1.29.2
-# to get the sha256 ID
-PROXY_IMAGE     ?= envoyproxy/envoy@sha256:c47136604751274b30fa7a89132314b8e3586d54d8f8cc30d7a911a9ecc5e11c
-DEV_TOOLS_IMAGE ?= ghcr.io/mosn/htnn-dev-tools:2024-03-05
+BUILD_IMAGE     ?= $(DOCKER_MIRROR)docker.io/library/golang:1.21-bullseye
+# We don't use istio/proxyv2 because it is not designed to be run separately (need to work around permission issue).
+PROXY_IMAGE     ?= $(DOCKER_MIRROR)docker.io/envoyproxy/envoy:contrib-v1.29.5
+# We may need to use timestamp if we need to update the image in one PR
+DEV_TOOLS_IMAGE ?= $(DOCKER_MIRROR)ghcr.io/mosn/htnn-dev-tools:2024-03-05
 
 PROTOC = protoc
+
+# Define a recursive wildcard function
+rwildcard=$(foreach d,$(wildcard $(addsuffix *,$(1))),$(call rwildcard,$d/,$(2))$(filter $(subst *,%,$(2)),$d))
 PROTO_FILES = $(call rwildcard,./,*.proto)
 GO_TARGETS = $(patsubst %.proto,%.pb.go,$(PROTO_FILES))
 
@@ -102,6 +105,7 @@ build-test-so:
 # you can remove the `go.work` and run `make integration-test`, or copy this module to a directory
 # which doesn't have `go.work` in its ancestors.
 .PHONY: integration-test
+# The data plane image used in the integration test can be controlled via env var PROXY_IMAGE
 integration-test: build-test-so
 	test -d /tmp/htnn_coverage && rm -rf /tmp/htnn_coverage || true
 	go test -v ./tests/integration/...

@@ -126,12 +126,6 @@ func (r *HTTPFilterPolicyReconciler) NeedReconcile(ctx context.Context, meta com
 //+kubebuilder:rbac:groups=htnn.mosn.io,resources=httpfilterpolicies,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=htnn.mosn.io,resources=httpfilterpolicies/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=htnn.mosn.io,resources=httpfilterpolicies/finalizers,verbs=update
-//+kubebuilder:rbac:groups=networking.istio.io,resources=virtualservices,verbs=get;list;watch;update;patch
-//+kubebuilder:rbac:groups=networking.istio.io,resources=gateways,verbs=get;list;watch
-//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=get;list;watch
-//+kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=get;list;watch
-//+kubebuilder:rbac:groups=networking.istio.io,resources=envoyfilters,verbs=get;list;watch;create;update;patch;delete
-//+kubebuilder:rbac:groups=networking.istio.io,resources=envoyfilters/status,verbs=get
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -413,7 +407,29 @@ func (r *HTTPFilterPolicyReconciler) resolveIstioGateway(ctx context.Context,
 		return nil
 	}
 
-	initState.AddPolicyForIstioGateway(policy, &gateway)
+	if ref.SectionName != nil {
+		found := false
+		name := string(*ref.SectionName)
+		for _, section := range gateway.Spec.Servers {
+			if section.Name == name {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			policy.SetAccepted(gwapiv1a2.PolicyReasonTargetNotFound, fmt.Sprintf("There is not Server.Name %s", name))
+			return nil
+		}
+	}
+
+	return r.resolveWithIstioGateway(ctx, &gateway, policy, initState)
+}
+
+func (r *HTTPFilterPolicyReconciler) resolveWithIstioGateway(_ context.Context,
+	gateway *istiov1a3.Gateway, policy *mosniov1.HTTPFilterPolicy, initState *translation.InitState) error {
+
+	initState.AddPolicyForIstioGateway(policy, gateway)
 	policy.SetAccepted(gwapiv1a2.PolicyReasonAccepted)
 	return nil
 }
@@ -432,6 +448,22 @@ func (r *HTTPFilterPolicyReconciler) resolveK8sGateway(ctx context.Context,
 
 		policy.SetAccepted(gwapiv1a2.PolicyReasonTargetNotFound)
 		return nil
+	}
+
+	if ref.SectionName != nil {
+		found := false
+		name := *ref.SectionName
+		for _, section := range gateway.Spec.Listeners {
+			if section.Name == name {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			policy.SetAccepted(gwapiv1a2.PolicyReasonTargetNotFound, fmt.Sprintf("There is not Listener.Name %s", name))
+			return nil
+		}
 	}
 
 	initState.AddPolicyForK8sGateway(policy, &gateway)
@@ -457,6 +489,10 @@ func (r *HTTPFilterPolicyReconciler) policyToTranslationState(ctx context.Contex
 	for i := range policies.Items {
 		policy := &policies.Items[i]
 		ref := policy.Spec.TargetRef
+		if ref == nil {
+			continue
+		}
+
 		nsName := types.NamespacedName{Name: string(ref.Name), Namespace: policy.Namespace}
 
 		key := getK8sKey(nsName.Namespace, nsName.Name)
@@ -477,6 +513,11 @@ func (r *HTTPFilterPolicyReconciler) policyToTranslationState(ctx context.Contex
 	for i := range policies.Items {
 		policy := &policies.Items[i]
 		ref := policy.Spec.TargetRef
+		if ref == nil {
+			policy.SetAccepted(gwapiv1a2.PolicyReasonInvalid, "targetRef is required when using HTTPFilterPolicy outside embedded mode")
+			continue
+		}
+
 		nsName := types.NamespacedName{Name: string(ref.Name), Namespace: policy.Namespace}
 
 		// defensive code in case the webhook doesn't work
@@ -565,6 +606,36 @@ func (r *HTTPFilterPolicyReconciler) policyToTranslationState(ctx context.Contex
 		var gateways istiov1a3.GatewayList
 		if err := r.List(ctx, &gateways); err != nil {
 			return nil, fmt.Errorf("failed to list Istio Gateway: %w", err)
+		}
+
+		if config.EnableEmbeddedMode() {
+			for _, gw := range gateways.Items {
+				ann := gw.GetAnnotations()
+				if ann == nil || ann[constant.AnnotationHTTPFilterPolicy] == "" {
+					continue
+				}
+
+				var policy mosniov1.HTTPFilterPolicy
+				err := json.Unmarshal([]byte(ann[constant.AnnotationHTTPFilterPolicy]), &policy)
+				if err != nil {
+					log.Errorf("failed to unmarshal policy out from Gateway, err: %v, name: %s, namespace: %s", err, gw.Name, gw.Namespace)
+					continue
+				}
+				// We require the embedded policy to be valid, otherwise it's costly to validate and hard to report the error.
+
+				policy.Namespace = gw.Namespace
+				// Name convention is "embedded-$kind-$name"
+				policy.Name = "embedded-gateway-" + gw.Name
+				err = r.resolveWithIstioGateway(ctx, gw, &policy, initState)
+				if err != nil {
+					return nil, err
+				}
+
+				key := getK8sKey(gw.Namespace, gw.Name)
+				istioGwIdx[key] = append(istioGwIdx[key], &policy)
+			}
+
+			// istioGatewayIndexer will be updated at the end of this method
 		}
 
 		for _, gw := range gateways.Items {

@@ -74,7 +74,7 @@ var _ = BeforeSuite(func() {
 	By("bootstrapping test environment")
 	testEnv = &envtest.Environment{
 		CRDDirectoryPaths: []string{
-			filepath.Join("..", "..", "..", "config", "crd", "bases"),
+			filepath.Join("..", "..", "..", "..", "manifests", "charts", "htnn-controller", "templates", "crds"),
 			filepath.Join("..", "..", "testdata", "crd"),
 		},
 		ErrorIfCRDPathMissing: true,
@@ -96,8 +96,6 @@ var _ = BeforeSuite(func() {
 
 	err = mosniov1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
-
-	//+kubebuilder:scaffold:scheme
 
 	err = istioscheme.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
@@ -135,9 +133,9 @@ var _ = BeforeSuite(func() {
 	registry.InitRegistryManager(&registry.RegistryManagerOption{
 		Output: output,
 	})
-	err = (&controller.ServiceRegistryReconciler{
-		ResourceManager: rm,
-	}).SetupWithManager(k8sManager)
+	err = controller.NewServiceRegistryReconciler(
+		rm,
+	).SetupWithManager(k8sManager)
 	Expect(err).ToNot(HaveOccurred())
 
 	go func() {

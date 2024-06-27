@@ -41,7 +41,7 @@ func mustReadHTTPFilterPolicy(fn string, out *[]map[string]interface{}) {
 	helper.MustReadInput(fn, out)
 }
 
-var _ = Describe("HTTPFilterPolicy controller", func() {
+var _ = Describe("HTTPFilterPolicy controller, for policy", func() {
 
 	const (
 		timeout  = time.Second * 10
@@ -153,10 +153,40 @@ var _ = Describe("HTTPFilterPolicy controller", func() {
 				return cs[0].Reason == string(gwapiv1a2.PolicyReasonInvalid)
 			}, timeout, interval).Should(BeTrue())
 		})
+
+		It("deal with policy without targetRef", func() {
+			ctx := context.Background()
+			input := []map[string]interface{}{}
+			mustReadHTTPFilterPolicy("httpfilterpolicy_without_targetref", &input)
+
+			for _, in := range input {
+				obj := pkg.MapToObj(in)
+				Expect(k8sClient.Create(ctx, obj)).Should(Succeed())
+			}
+
+			var policies mosniov1.HTTPFilterPolicyList
+			var p *mosniov1.HTTPFilterPolicy
+			var cs []metav1.Condition
+			Eventually(func() bool {
+				if err := k8sClient.List(ctx, &policies); err != nil {
+					return false
+				}
+				p = &policies.Items[0]
+				cs = p.Status.Conditions
+				return len(cs) == 1
+			}, timeout, interval).Should(BeTrue())
+			Expect(cs[0].Type).To(Equal(string(gwapiv1a2.PolicyConditionAccepted)))
+			Expect(cs[0].Reason).To(Equal(string(gwapiv1a2.PolicyReasonInvalid)))
+			Expect(p.IsValid()).To(BeFalse())
+		})
+
 	})
 
 	Context("When disabling native plugins", func() {
 		BeforeEach(func() {
+			// config.Init is designed to be called only during startup. As it is only called
+			// on the fly by tests, we simply add sleep to avoid race.
+			time.Sleep(200 * time.Millisecond)
 			// use env to set the conf
 			os.Setenv("HTNN_ENABLE_NATIVE_PLUGIN", "false")
 			config.Init()
@@ -185,6 +215,7 @@ var _ = Describe("HTTPFilterPolicy controller", func() {
 				}
 			}
 
+			time.Sleep(200 * time.Millisecond)
 			os.Setenv("HTNN_ENABLE_NATIVE_PLUGIN", "true")
 			config.Init()
 		})

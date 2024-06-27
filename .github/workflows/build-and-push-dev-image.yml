@@ -1,0 +1,61 @@
+name: build and publish dev image
+on:
+  push:
+    branches:
+    # this workflow create dev-only image for every push to the main branch
+    - main
+
+# unlike other workflow, we don't cancel in progress jobs of this workflow if multiple push events happen
+
+env:
+  REGISTRY: ghcr.io
+  PROXY_IMAGE_NAME: ghcr.io/mosn/htnn-proxy
+  CONTROLLER_IMAGE_NAME: ghcr.io/mosn/htnn-controller
+
+jobs:
+  build-and-push-image:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3.2.0
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # for the go commands in `make prebuild`
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          cache-dependency-path: "**/*.sum"
+
+      # The built image can be found in:
+      # https://github.com/mosn/htnn/pkgs/container/htnn-controller
+      # https://github.com/mosn/htnn/pkgs/container/htnn-proxy
+      - name: Build and push Docker image
+        run: |
+          make prebuild
+          cd ./manifests
+          # push image with the dev tag
+          export PROXY_IMAGE=${{ env.PROXY_IMAGE_NAME }}:dev
+          export CONTROLLER_IMAGE=${{ env.CONTROLLER_IMAGE_NAME }}:dev
+          make build-proxy-image
+          make build-controller-image
+          make push-image
+          # push image with unique tag
+          SHA=$(git rev-parse HEAD)
+          UNIQUE_TAG=dev-${SHA}
+          docker tag ${{ env.PROXY_IMAGE_NAME }}:dev ${{ env.PROXY_IMAGE_NAME }}:$UNIQUE_TAG
+          docker tag ${{ env.CONTROLLER_IMAGE_NAME }}:dev ${{ env.CONTROLLER_IMAGE_NAME }}:$UNIQUE_TAG
+          export PROXY_IMAGE=${{ env.PROXY_IMAGE_NAME }}:$UNIQUE_TAG
+          export CONTROLLER_IMAGE=${{ env.CONTROLLER_IMAGE_NAME }}:$UNIQUE_TAG
+          make push-image

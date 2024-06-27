@@ -18,25 +18,22 @@ IN_CI ?=
 
 TARGET_SO       = libgolang.so
 PROJECT_NAME    = mosn.io/htnn
+DOCKER_MIRROR   = m.daocloud.io/
 # Both images use glibc 2.31. Ensure libc in the images match each other.
-BUILD_IMAGE     ?= golang:1.21-bullseye
-# This is the envoyproxy/envoy:contrib-v1.29.4
-# Use docker inspect --format='{{index .RepoDigests 0}}' envoyproxy/envoy:contrib-v1.29.4
-# to get the sha256 ID
-PROXY_IMAGE     ?= envoyproxy/envoy@sha256:490f58e109735df4326bac2736ed41e062ce541d3851d634ccbf24552e5b4ce5
+BUILD_IMAGE     ?= $(DOCKER_MIRROR)docker.io/library/golang:1.21-bullseye
 # We don't use istio/proxyv2 because it is not designed to be run separately (need to work around permission issue).
-
+PROXY_IMAGE     ?= $(DOCKER_MIRROR)docker.io/envoyproxy/envoy:contrib-v1.29.5
 # We may need to use timestamp if we need to update the image in one PR
-DEV_TOOLS_IMAGE ?= ghcr.io/mosn/htnn-dev-tools:2024-03-05
+DEV_TOOLS_IMAGE ?= $(DOCKER_MIRROR)ghcr.io/mosn/htnn-dev-tools:2024-03-05
 
-VERSION   = $(shell cat VERSION)
-GIT_VERSION     = $(shell git log -1 --pretty=format:%h)
-
-ISTIO_VERSION = 1.21.2
+ISTIO_VERSION = 1.21.3
+GATEWAY_API_VERSION = 1.0.0
 MIN_K8S_VERSION = 1.26.0
 
 GO_PROD_MODULES = api types controller plugins # To make life simper, we only run linter on 'prod modules'
 GO_MODULES = $(GO_PROD_MODULES) e2e site tools
+# Don't run `go mod tidy` with `site` module, as this module is managed by docsy build image
+GO_MODULES_EXCLUDE_SITE = $(filter-out site,$(GO_MODULES))
 
 # Define a recursive wildcard function
 rwildcard=$(foreach d,$(wildcard $(addsuffix *,$(1))),$(call rwildcard,$d/,$(2))$(filter $(subst *,%,$(2)),$d))

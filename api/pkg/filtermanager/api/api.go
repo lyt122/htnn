@@ -17,6 +17,7 @@ package api
 import (
 	"net/http"
 	"net/url"
+	"sync/atomic"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -67,7 +68,9 @@ type Filter interface {
 	EncodeWholeResponseFilter
 
 	// OnLog is called when the HTTP stream is ended on HTTP Connection Manager filter.
-	OnLog()
+	// TODO: the trailers here are just placeholders.
+	OnLog(reqHeaders RequestHeaderMap, reqTrailers RequestTrailerMap,
+		respHeaders ResponseHeaderMap, respTrailers ResponseTrailerMap)
 }
 
 type PassThroughFilter struct{}
@@ -96,7 +99,9 @@ func (f *PassThroughFilter) EncodeTrailers(trailers ResponseTrailerMap) ResultAc
 	return Continue
 }
 
-func (f *PassThroughFilter) OnLog() {}
+func (f *PassThroughFilter) OnLog(reqHeaders RequestHeaderMap, reqTrailers RequestTrailerMap,
+	respHeaders ResponseHeaderMap, respTrailers ResponseTrailerMap) {
+}
 
 func (f *PassThroughFilter) DecodeRequest(headers RequestHeaderMap, data BufferInstance, trailers RequestTrailerMap) ResultAction {
 	return Continue
@@ -222,6 +227,8 @@ type FilterCallbackHandler interface {
 	PluginState() PluginState
 }
 
+// FilterFactory returns a per-request Filter which has configuration bound to it.
+// This function should be a pure builder and should not have any side effect.
 type FilterFactory func(config interface{}, callbacks FilterCallbackHandler) Filter
 
 // DynamicMetadata operates the Envoy's dynamic metadata
@@ -249,22 +256,6 @@ type ConfigCallbackHandler interface {
 	// So let's provide a placeholder here.
 }
 
-var (
-	// Log API family. Note that the Envoy's log level can be changed at runtime.
-	LogTrace     = api.LogTrace
-	LogDebug     = api.LogDebug
-	LogInfo      = api.LogInfo
-	LogWarn      = api.LogWarn
-	LogError     = api.LogError
-	LogCritical  = api.LogCritical
-	LogTracef    = api.LogTracef
-	LogDebugf    = api.LogDebugf
-	LogInfof     = api.LogInfof
-	LogWarnf     = api.LogWarnf
-	LogErrorf    = api.LogErrorf
-	LogCriticalf = api.LogCriticalf
-)
-
 type LogType = api.LogType
 
 var (
@@ -276,8 +267,100 @@ var (
 	LogLevelCritical = api.Critical
 )
 
+// Drop our log optimization once https://github.com/envoyproxy/envoy/commit/591fb13817ddf1f54945186e3c6de4e0345508d2
+// is used.
+
+var (
+	currLogLevel atomic.Int32
+)
+
 func GetLogLevel() LogType {
-	return api.GetLogLevel()
+	lv := currLogLevel.Load()
+	return LogType(lv)
+}
+
+func LogTrace(message string) {
+	if GetLogLevel() > LogLevelTrace {
+		return
+	}
+	api.LogTrace(message)
+}
+
+func LogDebug(message string) {
+	if GetLogLevel() > LogLevelDebug {
+		return
+	}
+	api.LogDebug(message)
+}
+
+func LogInfo(message string) {
+	if GetLogLevel() > LogLevelInfo {
+		return
+	}
+	api.LogInfo(message)
+}
+
+func LogWarn(message string) {
+	if GetLogLevel() > LogLevelWarn {
+		return
+	}
+	api.LogWarn(message)
+}
+
+func LogError(message string) {
+	if GetLogLevel() > LogLevelError {
+		return
+	}
+	api.LogError(message)
+}
+
+func LogCritical(message string) {
+	if GetLogLevel() > LogLevelCritical {
+		return
+	}
+	api.LogCritical(message)
+}
+
+func LogTracef(format string, v ...any) {
+	if GetLogLevel() > LogLevelTrace {
+		return
+	}
+	api.LogTracef(format, v...)
+}
+
+func LogDebugf(format string, v ...any) {
+	if GetLogLevel() > LogLevelDebug {
+		return
+	}
+	api.LogDebugf(format, v...)
+}
+
+func LogInfof(format string, v ...any) {
+	if GetLogLevel() > LogLevelInfo {
+		return
+	}
+	api.LogInfof(format, v...)
+}
+
+func LogWarnf(format string, v ...any) {
+	if GetLogLevel() > LogLevelWarn {
+		return
+	}
+	api.LogWarnf(format, v...)
+}
+
+func LogErrorf(format string, v ...any) {
+	if GetLogLevel() > LogLevelError {
+		return
+	}
+	api.LogErrorf(format, v...)
+}
+
+func LogCriticalf(format string, v ...any) {
+	if GetLogLevel() > LogLevelCritical {
+		return
+	}
+	api.LogCriticalf(format, v...)
 }
 
 var (

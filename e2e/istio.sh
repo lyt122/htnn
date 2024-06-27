@@ -17,29 +17,26 @@
 set -eo pipefail
 set -x
 
-ISTIOCTL=./bin/istioctl
+HELM="$(pwd)/bin/helm"
+E2E_DIR="$(pwd)"
 
 install() {
-    if ! $ISTIOCTL version 2>/dev/null | grep -q "$ISTIO_VERSION"; then
-        echo "matched istioctl not found, installing..."
-        curl -sL https://istio.io/downloadIstioctl | sh -
-        mv "$HOME"/.istioctl/bin/istioctl ./bin
-    fi
-    $ISTIOCTL install --set profile=default -y
-    $ISTIOCTL version
-    # the image name should be in ns/name format, otherwise istio will add ":ver" suffix to it
-    $ISTIOCTL manifest apply \
-        --set .values.pilot.image="htnn/e2e-cp:0.1.0" \
-        --set .values.pilot.env.ISTIO_DELTA_XDS=true \
-        --set .values.pilot.env.PILOT_SCOPE_GATEWAY_TO_NAMESPACE=true \
-        --set .values.pilot.env.PILOT_ENABLE_HTNN=true \
-        --set .values.pilot.env.HTNN_ENABLE_LDS_PLUGIN_VIA_ECDS=true \
-        --set .values.pilot.env.UNSAFE_PILOT_ENABLE_RUNTIME_ASSERTIONS=true \
-        --set .values.pilot.env.UNSAFE_PILOT_ENABLE_DELTA_TEST=true \
-        --set .values.global.proxy.image="htnn/e2e-dp:0.1.0" \
-        --set .values.global.imagePullPolicy=Never \
-        --set .values.global.logging.level=default:info,htnn:debug \
-        -y || exitWithAnalysis
+    pushd ../manifests/charts
+
+    $HELM dependency update htnn-controller
+    $HELM dependency update htnn-gateway
+    $HELM package htnn-controller htnn-controller
+    $HELM package htnn-gateway htnn-gateway
+
+    $HELM install htnn-controller htnn-controller --namespace istio-system --create-namespace --wait -f "$E2E_DIR/htnn_controller_values.yaml" \
+        || exitWithAnalysis
+
+    $HELM install htnn-gateway htnn-gateway --namespace istio-system --create-namespace -f "$E2E_DIR/htnn_gateway_values.yaml" \
+        && \
+        (kubectl wait --timeout=5m -n istio-system deployment/istio-ingressgateway --for=condition=Available \
+        || exitWithAnalysis)
+
+    popd
 }
 
 exitWithAnalysis() {
@@ -56,7 +53,7 @@ exitWithAnalysis() {
 }
 
 uninstall() {
-    $ISTIOCTL uninstall --purge -y
+    $HELM uninstall htnn-controller -n istio-system && $HELM uninstall htnn-gateway -n istio-system && kubectl delete ns istio-system
 }
 
 opt=$1

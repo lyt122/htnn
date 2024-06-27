@@ -16,8 +16,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-      with:
-        submodules: recursive
 
     - name: Set up Go
       uses: actions/setup-go@v5
@@ -59,6 +57,18 @@ jobs:
           echo "Generated files are not up-to-date. Please run 'make gen-crd-code' and commit changes."
           exit 1
         fi
+        pushd controller/
+        make manifests generate
+        if ! git diff --exit-code; then
+          echo "Generated files are not up-to-date. Please run 'make manifests generate' under controller/ and commit changes."
+          exit 1
+        fi
+        popd
+        make gen-helm-docs
+        if ! git diff --exit-code; then
+          echo "Generated files are not up-to-date. Please run 'make gen-helm-docs' and commit changes."
+          exit 1
+        fi
 
     - name: lint go
       run: make lint-go
@@ -84,6 +94,14 @@ jobs:
       run: |
         # See https://editorconfig.org/ to know how to support editorconfig in your editor
         make lint-editorconfig
+
+    - name: lint shell
+      uses: reviewdog/action-shellcheck@v1
+      with:
+        github_token: ${{ secrets.github_token }}
+        reporter: github-pr-review
+        path: "."
+        pattern: "*.sh"
 
     - name: lint remain
       run: |

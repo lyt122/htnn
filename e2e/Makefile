@@ -20,6 +20,7 @@ $(LOCALBIN):
 
 KUBECTL ?= $(LOCALBIN)/kubectl
 KIND ?= $(LOCALBIN)/kind
+HELM ?= $(LOCALBIN)/helm
 
 .PHONY: kubectl
 kubectl: $(LOCALBIN)
@@ -30,48 +31,44 @@ kubectl: $(LOCALBIN)
 kind: $(LOCALBIN)
 	@test -x $(KIND) || GOBIN=$(LOCALBIN) go install sigs.k8s.io/kind@v0.20.0
 
+# we can't install it via `go install` because a limitation: https://github.com/golang/go/issues/44840
+.PHONY: helm
+helm: $(LOCALBIN)
+	@test -x $(HELM) || curl https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | USE_SUDO=false HELM_INSTALL_DIR=$(LOCALBIN) bash
+
 .PHONY: create-cluster
 create-cluster: kind kubectl
 	$(KIND) create cluster --name htnn --image kindest/node:v$(MIN_K8S_VERSION)
-	$(KUBECTL) kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=v1.0.0" | $(KUBECTL) apply -f -
+	$(KUBECTL) kustomize "github.com/kubernetes-sigs/gateway-api/config/crd?ref=v$(GATEWAY_API_VERSION)" | $(KUBECTL) apply -f -
 
 .PHONY: delete-cluster
 delete-cluster: kind
 	$(KIND) delete cluster --name htnn || true
 
-.PHONY: e2e-build-controller-image
-e2e-build-controller-image:
-	cd ../controller/ && IMG=htnn/e2e-cp:0.1.0 CONTROLLER_BASE_IMAGE=docker.io/istio/pilot:$(ISTIO_VERSION) make docker-build
-
-e2e-build-so:
-	cd ../plugins/ && make build-so && mv libgolang.so ../e2e/
+.PHONY: e2e-prepare-controller-image
+e2e-prepare-controller-image: kind
+	cd ../manifests/ && CONTROLLER_IMAGE=htnn/controller:e2e CONTROLLER_BASE_IMAGE=$(DOCKER_MIRROR)docker.io/istio/pilot:$(ISTIO_VERSION) \
+		make build-controller-image
+	$(KIND) load docker-image -n htnn htnn/controller:e2e
 
 .PHONY: e2e-prepare-data-plane-image
-e2e-prepare-data-plane-image: e2e-build-so kind
-	docker build -t htnn/e2e-dp:0.1.0 .
-	$(KIND) load docker-image htnn/e2e-dp:0.1.0 --name htnn
+e2e-prepare-data-plane-image: kind
+	cd ../manifests/ && PROXY_BASE_IMAGE=$(DOCKER_MIRROR)docker.io/istio/proxyv2:$(ISTIO_VERSION) \
+		PROXY_IMAGE=htnn/gateway:e2e make build-proxy-image
+	$(KIND) load docker-image htnn/gateway:e2e --name htnn
 
 .PHONY: deploy-istio
-deploy-istio:
-	$(KUBECTL) apply -f ./base/istio_prestart.yaml
+deploy-istio: helm
 	ISTIO_VERSION=$(ISTIO_VERSION) ./istio.sh install
-
-.PHONY: deploy-controller
-deploy-controller: kind kubectl
-	cd ../controller/ && KIND=$(KIND) KIND_OPTION="-n htnn" KUBECTL=$(KUBECTL) IMG=htnn/e2e-cp:0.1.0 make deploy
-
-.PHONY: undeploy-controller
-undeploy-controller: kubectl
-	cd ../controller/ && KUBECTL=$(KUBECTL) make undeploy
 
 .PHONY: run-e2e
 run-e2e:
-	PATH=$(LOCALBIN):"$(PATH)" go test -v ./...
+	PATH=$(LOCALBIN):"$(PATH)" go test -v ./... || (bash -x ./collect_e2e_logs.sh; exit -1)
 
-# To update the control plane, run `make e2e-prepare-controller-image deploy-controller`, and the delete
+# To update the control plane, run `make e2e-prepare-controller-image`, and then delete
 # the istiod pod to trigger restart.
 # To update the data plane, run `make e2e-prepare-data-plane-image` to update the image and then delete
 # the data plane pod to trigger restart.
 .PHONY: e2e-ci
 e2e-ci: delete-cluster create-cluster e2e-prepare-data-plane-image \
-	e2e-build-controller-image deploy-controller deploy-istio run-e2e
+	e2e-prepare-controller-image deploy-istio run-e2e

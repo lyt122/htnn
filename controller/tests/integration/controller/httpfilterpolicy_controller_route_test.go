@@ -38,7 +38,7 @@ import (
 	mosniov1 "mosn.io/htnn/types/apis/v1"
 )
 
-var _ = Describe("HTTPFilterPolicy controller", func() {
+var _ = Describe("HTTPFilterPolicy controller, for route", func() {
 
 	const (
 		timeout  = time.Second * 10
@@ -661,7 +661,7 @@ var _ = Describe("HTTPFilterPolicy controller", func() {
 		It("deal with embedded HTTPFilterPolicy", func() {
 			ctx := context.Background()
 			input := []map[string]interface{}{}
-			mustReadHTTPFilterPolicy("virtualservice_embeded_hfp", &input)
+			mustReadHTTPFilterPolicy("virtualservice_embedded_hfp", &input)
 
 			var virtualService *istiov1a3.VirtualService
 			for _, in := range input {
@@ -780,7 +780,7 @@ var _ = Describe("HTTPFilterPolicy controller", func() {
 		It("deal with embedded HTTPFilterPolicy, ignore invalid embedded HTTPFilterPolicy", func() {
 			ctx := context.Background()
 			input := []map[string]interface{}{}
-			mustReadHTTPFilterPolicy("virtualservice_embeded_invalid_hfp", &input)
+			mustReadHTTPFilterPolicy("virtualservice_embedded_invalid_hfp", &input)
 
 			for _, in := range input {
 				obj := pkg.MapToObj(in)
@@ -799,7 +799,7 @@ var _ = Describe("HTTPFilterPolicy controller", func() {
 		It("deal with embedded HTTPFilterPolicy with SubPolicies", func() {
 			ctx := context.Background()
 			input := []map[string]interface{}{}
-			mustReadHTTPFilterPolicy("virtualservice_embeded_hfp_with_subpolicies", &input)
+			mustReadHTTPFilterPolicy("virtualservice_embedded_hfp_with_subpolicies", &input)
 
 			for _, in := range input {
 				obj := pkg.MapToObj(in)
