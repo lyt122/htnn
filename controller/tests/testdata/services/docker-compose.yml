@@ -9,35 +9,36 @@ services:
     networks:
       - service
 
-    nacos_v1_2:
-      image: nacos/nacos-server:v1.4.6-slim
-      env_file:
-        - env/nacos.env
-      restart: unless-stopped
-      ports:
-        - "8849:8848"
-      networks:
-        - service
-        -
-    nacos_v2:
-      image: nacos/nacos-server:v2.2.3-slim
-      env_file:
-        - env/nacos.env
-      restart: unless-stopped
-      ports:
-        - "8850:8848"
-      networks:
-        - service
+  nacos_v1_2:
+    image: nacos/nacos-server:v1.4.6-slim
+    env_file:
+      - env/nacos.env
+    restart: unless-stopped
+    ports:
+      - "8849:8848"
+    networks:
+      - service
 
-    nacos_v2_2:
-      image: nacos/nacos-server:v2.2.3-slim
-      env_file:
-        - env/nacos.env
-      restart: unless-stopped
-      ports:
-        - "8851:8848"
-      networks:
-        - service
+  nacos_v2:
+    image: nacos/nacos-server:v2.2.3-slim
+    env_file:
+      - env/nacos.env
+    restart: unless-stopped
+    ports:
+      - "8850:8848"
+    networks:
+      - service
+
+  nacos_v2_2:
+    image: nacos/nacos-server:v2.2.3-slim
+    env_file:
+      - env/nacos.env
+    restart: unless-stopped
+    ports:
+      - "8851:8848"
+    networks:
+      - service
+
   consul:
     image: docker.m.daocloud.io/library/consul:1.15.4
     restart: unless-stopped
@@ -46,7 +47,8 @@ services:
       - "8600:8600"
     command: agent -server -bootstrap -client=0.0.0.0
     networks:
-      service:
+      - service
+
   consul1:
     image: docker.m.daocloud.io/library/consul:1.15.4
     restart: unless-stopped
@@ -55,10 +57,7 @@ services:
       - "8601:8600"
     command: agent -server -bootstrap -client=0.0.0.0
     networks:
-      service:
-
-
+      - service
 
 networks:
   service:
-
