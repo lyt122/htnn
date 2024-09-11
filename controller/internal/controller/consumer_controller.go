@@ -94,7 +94,7 @@ func (r *ConsumerReconciler) consumersToState(ctx context.Context,
 		if consumer.IsSpecChanged() {
 			err := mosniov1.ValidateConsumer(consumer)
 			if err != nil {
-				log.Errorf("invalid Consumer, err: %v, name: %s, namespace: %s", consumer.Name, consumer.Namespace)
+				log.Errorf("invalid Consumer, err: %v, name: %s, namespace: %s", err, consumer.Name, consumer.Namespace)
 				consumer.SetAccepted(mosniov1.ReasonInvalid, err.Error())
 				continue
 			}
@@ -107,9 +107,21 @@ func (r *ConsumerReconciler) consumersToState(ctx context.Context,
 		if namespaceToConsumers[namespace] == nil {
 			namespaceToConsumers[namespace] = make(map[string]*mosniov1.Consumer)
 		}
-		namespaceToConsumers[namespace][consumer.Name] = consumer
 
-		consumer.SetAccepted(mosniov1.ReasonAccepted)
+		name := consumer.Name
+		if consumer.Spec.Name != "" {
+			name = consumer.Spec.Name
+		}
+
+		if namespaceToConsumers[namespace][name] != nil {
+			log.Errorf("duplicate Consumer %s/%s, k8s name %s takes effect, k8s name %s ignored", namespace, name,
+				namespaceToConsumers[namespace][name].Name, consumer.Name)
+			consumer.SetAccepted(mosniov1.ReasonInvalid,
+				fmt.Sprintf("duplicate with another consumer %s/%s, k8s name %s", namespace, name, consumer.Name))
+		} else {
+			namespaceToConsumers[namespace][name] = consumer
+			consumer.SetAccepted(mosniov1.ReasonAccepted)
+		}
 	}
 
 	state := &consumerReconcileState{
